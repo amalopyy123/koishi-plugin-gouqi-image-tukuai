@@ -11,11 +11,11 @@ export const Config: Schema<Config> = Schema.object({
   rpxy_url_img2img: Schema.string().default('').description('图生图地址'),
   token: Schema.string().default('').role("secret").description('token'),
   sampler_index: Schema.string().default('Euler a').description("sampler_index,Euler a,DPM++ 2M"),
-  additional_prompt: Schema.string().default('masterpiece, best quality, ultra-detailed, extremely detailed, best quality, best anatomy').description('附加提示词'),
+  additional_prompt: Schema.string().default('masterpiece, best quality, ultra-detailed, extremely detailed, best quality').description('附加提示词'),
   negative_prompt: Schema.string().default('owres, bad anatomy, bad hands, text, error, (missing fingers), extra digit, fewer digits, cropped, worst quality, low quality, signature, watermark, username, long neck, Humpbacked, bad crotch, bad crotch seam, fused crotch, fused seam, poorly drawn crotch, poorly drawn crotch seam, bad thigh gap, missing thigh gap, fused thigh gap, bad anatomy, short arm, (((missing arms))), missing thighs, missing calf, mutation, duplicate, more than 1 left hand, more than 1 right hand, deformed, (blurry), missing legs, extra arms, extra thighs, more than 2 thighs, extra calf, fused calf, extra legs, bad knee, extra knee, more than 2 legs').description('负面提示词'),
   steps: Schema.number().default(28).description('步数，28是免费，报错的话要调到28以上'),
-  denoising_strength: Schema.number().default(0.8).description('1 - 相似度'),
-  cfg_scale: Schema.number().default(10).description('低 cfg_scale 值：更有创意；高 cfg_scale 值：更加服从。对于绝大多数用户和绝大多数情况，7 是最理想的起始值。'),
+  denoising_strength: Schema.number().default(0.1).description('1 - 相似度'),
+  cfg_scale: Schema.number().default(8).description('低 cfg_scale 值：更有创意；高 cfg_scale 值：更加服从。对于绝大多数用户和绝大多数情况，7 是最理想的起始值。'),
   seed: Schema.number().default(-1).description('种子'),
   allow_image: Schema.boolean().default(true).description('是否允许图生图'),
   collapse_response: Schema.boolean().default(true).description('折叠回复'),
@@ -90,9 +90,9 @@ export function apply(ctx: Context, config) {
       "hr_scale": 2,
       "hr_upscaler": "Latent",
       "hr_second_pass_steps": 10,
-      "prompt": "masterpiece, nsfw,breast,cowgirl, best quality,  long hair, looking at viewer, blue eyes, school uniform, classroom",
+      "prompt": "masterpiece, nsfw, breast,cowgirl, best quality, long hair, looking at viewer, blue eyes, school uniform, classroom",
       "seed": config.seed,
-      "sampler_name": config.cfg_scale,
+      "sampler_name": config.sampler_index,
       "steps": config.steps,
       "cfg_scale": config.cfg_scale,
       "width": 512,
@@ -103,7 +103,7 @@ export function apply(ctx: Context, config) {
     paramsImgToImg = {
       "init_images": ["data:image/jpeg;base64,..."],
       "denoising_strength": 0.1,
-      "prompt": "masterpiece, best quality, catgirl,cute",
+      "prompt": "masterpiece, best quality, catgirl, cute",
       "styles": [
         "Resize and fill"
       ],
@@ -111,14 +111,16 @@ export function apply(ctx: Context, config) {
       "steps": config.steps,
       "cfg_scale": config.cfg_scale,
       "width": 512,
-      "height": 768,
-      "sampler_index": "Euler a",
+      "height": 512,
+      "sampler_index": config.sampler_index,
       "negative_prompt": config.negative_prompt
     }
   }
   async function generateImage({ session, options: options2 }, input) {
-    const { hasAt, content, atSelf } = session.stripped;
-    const sentImage = h.select(input, 'img').length > 0 && hasAt;
+    //const { hasAt, content, atSelf } = session.stripped;
+    let imgList = h.select(input, 'img').map((item) => h.image(item.attrs.src));
+    let atList = h.select(input, 'at').map((item) => h.text(item.attrs.id));
+    let sentImage = imgList.length > 0 || atList.length > 0;
 
     if (!config.allow_image && sentImage) {
       throw new SessionError("不允许输入图片");
@@ -147,7 +149,7 @@ export function apply(ctx: Context, config) {
         }
         initParams();
         const headers = {
-          'Content-Type': `application/json`
+          'Content-Type': 'application/json'
         };
         let base64Url = '';
         let promtToSend = textPromt + ',' + config.additional_prompt;
@@ -155,18 +157,46 @@ export function apply(ctx: Context, config) {
         if (sentImage) {
           //图生图
           paramsImgToImg.prompt = promtToSend;
-          let imgList = h.select(input, 'img').map((item) => h.image(item.attrs.src));
-          const imgUrl = imgList[0].attrs.src;
+          
+          let imgUrl;
+          if (imgList.length != 0) {
+            imgUrl = imgList[0].attrs.src;
+          } else {
+            let atId = atList[0];
+            imgUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${atId}&spec=640`;
+          }
+          //const imgUrl = imgList[0].attrs.src;
           const image = await downloadImage(ctx, imgUrl);
-          //console.log(image.base64)
-          paramsImgToImg.init_images = [image.base64];
-          response = await ctx.http(config.rpxy_url_txt2img, {
+          //console.log(image.dataUrl)
+          paramsImgToImg.init_images = [image.dataUrl];
+          response = await ctx.http(config.rpxy_url_img2img, {
             method: "POST",
             headers: headers,
             timeout: 9900000,
-            data: paramsTextToImg,
+            data: paramsImgToImg,
             responseType: 'arraybuffer'
           });
+          // 从 response.data 中获取服务器返回的数据
+          const resData = response.data;
+          // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
+          if (resData && resData.byteLength > 0) {
+            // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
+            const respnseBuffer = Buffer.from(resData);
+            // 将 Buffer 转换为 utf8 字符串
+            const jsonString = respnseBuffer.toString('utf8');
+            //log前100个字符看结构，图生图的images不是数组
+            //console.log(jsonString.slice(0, 100));
+            //{
+            // "images": "iVBORw0KGgoAAAANSUhEUgAAAoAAAAKACAIAAACDr150AAAFzHRFWHRwcm9tcHQAeyIzIjogeyJpbnB1dHM
+            const parsedObject = JSON.parse(jsonString);
+            if (parsedObject && parsedObject.images) {
+              const b64 = parsedObject.images;
+              let mimeType = "image/jpeg";
+              base64Url = `data:${mimeType};base64,${b64}`;
+            } else {
+              throw new Error('无法提取base64的图片');
+            }
+          }
         } else {
           //文生图
           paramsTextToImg.prompt = promtToSend;
@@ -177,29 +207,30 @@ export function apply(ctx: Context, config) {
             data: paramsTextToImg,
             responseType: 'arraybuffer'
           });
-        }
-        // 从 response.data 中获取服务器返回的数据
-        const resData = response.data;
-        // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
-        if (resData && resData.byteLength > 0) {
-          // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
-          const respnseBuffer = Buffer.from(resData);
-          // 将 Buffer 转换为 utf8 字符串
-          const jsonString = respnseBuffer.toString('utf8');
-          //log前100个字符看结构
-          console.log(jsonString.slice(0, 100));
-          //{
-          // "images": [
-          //   "iVBORw0KGgoAAAANSUhEUgAAA4AAAAUQCAIAAACa4Kl5AAAMgHRFWHRwcm9tcHQAeyIxIjoge
-          const parsedObject = JSON.parse(jsonString);
-          if (parsedObject && parsedObject.images && Array.isArray(parsedObject.images) && parsedObject.images.length > 0) {
-            const b64 = parsedObject.images[0];
-            let mimeType = "image/jpeg";
-            base64Url = `data:${mimeType};base64,${b64}`;
-          } else {
-            throw new Error('无法提取base64的图片');
+          // 从 response.data 中获取服务器返回的数据
+          const resData = response.data;
+          // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
+          if (resData && resData.byteLength > 0) {
+            // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
+            const respnseBuffer = Buffer.from(resData);
+            // 将 Buffer 转换为 utf8 字符串
+            const jsonString = respnseBuffer.toString('utf8');
+            //log前100个字符看结构，文生图的images是数组
+            //console.log(jsonString.slice(0, 100));
+            //{
+            // "images": [
+            //   "iVBORw0KGgoAAAANSUhEUgAAA4AAAAUQCAIAAACa4Kl5AAAMgHRFWHRwcm9tcHQAeyIxIjoge
+            const parsedObject = JSON.parse(jsonString);
+            if (parsedObject && parsedObject.images && Array.isArray(parsedObject.images) && parsedObject.images.length > 0) {
+              const b64 = parsedObject.images[0];
+              let mimeType = "image/jpeg";
+              base64Url = `data:${mimeType};base64,${b64}`;
+            } else {
+              throw new Error('无法提取base64的图片');
+            }
           }
         }
+
         if (!config.collapse_response) {
           return segment.image(base64Url);
         }
@@ -221,6 +252,7 @@ export function apply(ctx: Context, config) {
   ctx
     .command("image-novel <prompts:text>")
     .alias("画图novel")
+    .alias("画图n")
     .action(async ({ session, options: options2 }, input) => {
       return generateImage({ session, options: options2 }, input)
     }
