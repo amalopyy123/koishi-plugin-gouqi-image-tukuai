@@ -22,7 +22,7 @@ export const Config: Schema<Config> = Schema.object({
   translate_input: Schema.boolean().default(false).description('翻译输入')
 })
 export const inject = {
-  required: ["http", "gouqi_translator_yd1"]
+  required: ['http', 'gouqi_translator_yd1', 'gouqi_base']
 };
 
 function hasSensitiveWords(input) {
@@ -58,8 +58,8 @@ function hasSensitiveWords(input) {
   }
   return false;
 }
-
-var ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", , "image/gif"];
+//jimp不支持"image/webp"
+var ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 //10M
 var MAX_CONTENT_SIZE = 10485760;
 async function downloadImage(ctx, url, headers = {}) {
@@ -116,6 +116,53 @@ export function apply(ctx: Context, config) {
       "negative_prompt": config.negative_prompt
     }
   }
+
+  /**
+ * 根据特定规则计算新的图片尺寸
+ * 规则1: 如果宽或高小于MIN_DIMENSION，则按比例放大，确保最小边等于MIN_DIMENSION
+ * 规则2: 如果宽或高大于MAX_DIMENSION，则按比例缩小，确保最大边等于MAX_DIMENSION
+ * 规则3: 否则，尺寸保持不变
+ *
+ * @param {number} originalWidth 原始宽度
+ * @param {number} originalHeight 原始高度
+ * @returns {{width: number, height: number}} 包含新宽度和新高度的对象
+ */
+  function calculateNewDimensions(originalWidth, originalHeight) {
+    const MIN_DIMENSION = 700;
+    const MAX_DIMENSION = 1500;
+
+    let newWidth = originalWidth;
+    let newHeight = originalHeight;
+
+    // 规则1: 需要放大
+    if (originalWidth < MIN_DIMENSION || originalHeight < MIN_DIMENSION) {
+      let ratio;
+      // 基于更小的那条边来计算缩放比例
+      if (originalWidth < originalHeight) {
+        ratio = MIN_DIMENSION / originalWidth;
+      } else {
+        ratio = MIN_DIMENSION / originalHeight;
+      }
+      newWidth = Math.round(originalWidth * ratio);
+      newHeight = Math.round(originalHeight * ratio);
+    }
+    // 规则2: 需要缩小 (使用 else if 是因为放大和缩小是互斥的)
+    else if (originalWidth > MAX_DIMENSION || originalHeight > MAX_DIMENSION) {
+      let ratio;
+      // 基于更大的那条边来计算缩放比例
+      if (originalWidth > originalHeight) {
+        ratio = MAX_DIMENSION / originalWidth;
+      } else {
+        ratio = MAX_DIMENSION / originalHeight;
+      }
+      newWidth = Math.round(originalWidth * ratio);
+      newHeight = Math.round(originalHeight * ratio);
+    }
+
+    // 规则3: 尺寸在范围内，不需要改变，直接返回计算结果（初始值）
+    return { width: newWidth, height: newHeight };
+  }
+
   async function generateImage({ session, options: options2 }, input) {
     //const { hasAt, content, atSelf } = session.stripped;
     let imgList = h.select(input, 'img').map((item) => h.image(item.attrs.src));
@@ -154,10 +201,11 @@ export function apply(ctx: Context, config) {
         let base64Url = '';
         let promtToSend = textPromt + ',' + config.additional_prompt;
         let response;
+        //sentImage = true;
         if (sentImage) {
           //图生图
           paramsImgToImg.prompt = promtToSend;
-          
+
           let imgUrl;
           if (imgList.length != 0) {
             imgUrl = imgList[0].attrs.src;
@@ -165,10 +213,27 @@ export function apply(ctx: Context, config) {
             let atId = atList[0];
             imgUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${atId}&spec=640`;
           }
+          //imgUrl = 'https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/96/8c/d0/968cd034-038e-2648-5718-77a5eeb82921/AppIcon-0-1x_U007emarketing-0-7-0-85-220-0.png/230x0w.webp';
+          //imgUrl = 'https://img.duoziwang.com/2021/04/08051804301493.jpg';
           //const imgUrl = imgList[0].attrs.src;
           const image = await downloadImage(ctx, imgUrl);
+          if (image.base64.length < 100) {
+            throw new Error('无法获取参考图片');
+          }
+          let origDimensions = ctx['gouqi_base'].getImage64Dimensions(image.dataUrl);
+          const newDimensions = calculateNewDimensions(origDimensions.width, origDimensions.height);
+          if (
+            (newDimensions.width < 700 || newDimensions.width > 1500) ||
+            (newDimensions.height < 700 || newDimensions.height > 1500)
+          ) {
+            throw new Error('无法适配图片尺寸');
+          }
+          //console.log(origDimensions);
+          //console.log(newDimensions);
+          //经测试，参考图的大小对结果的影响非常大，如果参考图太小生成的图片质量会非常差
+          const resizedImage64 = await ctx['gouqi_base'].resizeImage64(image.dataUrl, newDimensions.width, newDimensions.height);
           //console.log(image.dataUrl)
-          paramsImgToImg.init_images = [image.dataUrl];
+          paramsImgToImg.init_images = [resizedImage64];
           response = await ctx.http(config.rpxy_url_img2img, {
             method: "POST",
             headers: headers,
@@ -230,7 +295,9 @@ export function apply(ctx: Context, config) {
             }
           }
         }
-
+        if (base64Url.length < 123) {
+          throw new Error('生成图片失败');
+        }
         if (!config.collapse_response) {
           return segment.image(base64Url);
         }
