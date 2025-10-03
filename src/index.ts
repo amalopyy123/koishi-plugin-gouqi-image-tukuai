@@ -177,145 +177,147 @@ export function apply(ctx: Context, config) {
     let textPromt = '';
     textList.map(item => { textPromt += item.attrs.content });
 
-    if (hasSensitiveWords(textPromt)) {
-      //提时含有敏感词
-      const bot = session.bot;
-      try {
-        const data2 = await bot.internal.getStrangerInfo(session.userId);
-        session.send("不可以涩涩！打屎" + data2.nickname + "!!!");
-      } catch (error) {
-        session.send("不可以涩涩！");
-      }
-      return;
-    }
 
-    if (config.translate_input) {
-      try {
+    try {
+      if (config.translate_input) {
         if (hasChinese(textPromt)) {
           textPromt = await ctx['gouqi_translator_yd1'].translate(ctx, textPromt);
         }
-        initParams();
-        const headers = {
-          'Content-Type': 'application/json'
-        };
-        let base64Url = '';
-        let promtToSend = textPromt + ',' + config.additional_prompt;
-        let response;
-        //sentImage = true;
-        if (sentImage) {
-          //图生图
-          paramsImgToImg.prompt = promtToSend;
-
-          let imgUrl;
-          if (imgList.length != 0) {
-            imgUrl = imgList[0].attrs.src;
-          } else {
-            let atId = atList[0];
-            imgUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${atId}&spec=640`;
-          }
-          //imgUrl = 'https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/96/8c/d0/968cd034-038e-2648-5718-77a5eeb82921/AppIcon-0-1x_U007emarketing-0-7-0-85-220-0.png/230x0w.webp';
-          //imgUrl = 'https://img.duoziwang.com/2021/04/08051804301493.jpg';
-          //const imgUrl = imgList[0].attrs.src;
-          const image = await downloadImage(ctx, imgUrl);
-          if (image.base64.length < 100) {
-            throw new Error('无法获取参考图片');
-          }
-          let origDimensions = ctx['gouqi_base'].getImage64Dimensions(image.dataUrl);
-          const newDimensions = calculateNewDimensions(origDimensions.width, origDimensions.height);
-          if (
-            (newDimensions.width < 700 || newDimensions.width > 1500) ||
-            (newDimensions.height < 700 || newDimensions.height > 1500)
-          ) {
-            throw new Error('无法适配图片尺寸');
-          }
-          //console.log(origDimensions);
-          //console.log(newDimensions);
-          //经测试，参考图的大小对结果的影响非常大，如果参考图太小生成的图片质量会非常差
-          const resizedImage64 = await ctx['gouqi_base'].resizeImage64(image.dataUrl, newDimensions.width, newDimensions.height);
-          //console.log(image.dataUrl)
-          paramsImgToImg.init_images = [resizedImage64];
-          response = await ctx.http(config.rpxy_url_img2img, {
-            method: "POST",
-            headers: headers,
-            timeout: 9900000,
-            data: paramsImgToImg,
-            responseType: 'arraybuffer'
-          });
-          // 从 response.data 中获取服务器返回的数据
-          const resData = response.data;
-          // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
-          if (resData && resData.byteLength > 0) {
-            // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
-            const respnseBuffer = Buffer.from(resData);
-            // 将 Buffer 转换为 utf8 字符串
-            const jsonString = respnseBuffer.toString('utf8');
-            //log前100个字符看结构，图生图的images不是数组
-            //console.log(jsonString.slice(0, 100));
-            //{
-            // "images": "iVBORw0KGgoAAAANSUhEUgAAAoAAAAKACAIAAACDr150AAAFzHRFWHRwcm9tcHQAeyIzIjogeyJpbnB1dHM
-            const parsedObject = JSON.parse(jsonString);
-            if (parsedObject && parsedObject.images) {
-              const b64 = parsedObject.images;
-              let mimeType = "image/jpeg";
-              base64Url = `data:${mimeType};base64,${b64}`;
-            } else {
-              throw new Error('无法提取base64的图片');
-            }
-          }
-        } else {
-          //文生图
-          paramsTextToImg.prompt = promtToSend;
-          response = await ctx.http(config.rpxy_url_txt2img, {
-            method: "POST",
-            headers: headers,
-            timeout: 9900000,
-            data: paramsTextToImg,
-            responseType: 'arraybuffer'
-          });
-          // 从 response.data 中获取服务器返回的数据
-          const resData = response.data;
-          // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
-          if (resData && resData.byteLength > 0) {
-            // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
-            const respnseBuffer = Buffer.from(resData);
-            // 将 Buffer 转换为 utf8 字符串
-            const jsonString = respnseBuffer.toString('utf8');
-            //log前100个字符看结构，文生图的images是数组
-            //console.log(jsonString.slice(0, 100));
-            //{
-            // "images": [
-            //   "iVBORw0KGgoAAAANSUhEUgAAA4AAAAUQCAIAAACa4Kl5AAAMgHRFWHRwcm9tcHQAeyIxIjoge
-            const parsedObject = JSON.parse(jsonString);
-            if (parsedObject && parsedObject.images && Array.isArray(parsedObject.images) && parsedObject.images.length > 0) {
-              const b64 = parsedObject.images[0];
-              let mimeType = "image/jpeg";
-              base64Url = `data:${mimeType};base64,${b64}`;
-            } else {
-              throw new Error('无法提取base64的图片');
-            }
-          }
-        }
-        if (base64Url.length < 123) {
-          throw new Error('生成图片失败');
-        }
-        if (!config.collapse_response) {
-          return segment.image(base64Url);
-        }
-        const result = h('figure');
-        const attrs = {
-          userId: session.userId,
-          nickname: session.author?.nickname || session.username,
-        }
-        result.children.push(h('message', attrs, 'prompts: ' + promtToSend));
-        //result.children.push(h('message', attrs, 'negative_prompt: ' + paramsToSend.negative_prompt));
-        result.children.push(h('message', attrs, segment.image(base64Url)));
-        await session.send(result);
-      } catch (err) {
-        ctx.logger.warn(err);
       }
-    }
+      if (hasSensitiveWords(textPromt)) {
+        //提时含有敏感词
+        const bot = session.bot;
+        try {
+          const data2 = await bot.internal.getStrangerInfo(session.userId);
+          session.send("不可以涩涩！打屎" + data2.nickname + "!!!");
+        } catch (error) {
+          session.send("不可以涩涩！");
+        }
+        return;
+      }
+  
+      initParams();
+      const headers = {
+        'Content-Type': 'application/json'
+      };
+      let base64Url = '';
+      let promtToSend = textPromt + ',' + config.additional_prompt;
+      let response;
+      //sentImage = true;
+      if (sentImage) {
+        //图生图
+        paramsImgToImg.prompt = promtToSend;
 
+        let imgUrl;
+        if (imgList.length != 0) {
+          imgUrl = imgList[0].attrs.src;
+        } else {
+          let atId = atList[0];
+          imgUrl = `http://q.qlogo.cn/headimg_dl?dst_uin=${atId}&spec=640`;
+        }
+        //imgUrl = 'https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/96/8c/d0/968cd034-038e-2648-5718-77a5eeb82921/AppIcon-0-1x_U007emarketing-0-7-0-85-220-0.png/230x0w.webp';
+        //imgUrl = 'https://img.duoziwang.com/2021/04/08051804301493.jpg';
+        //const imgUrl = imgList[0].attrs.src;
+        const image = await downloadImage(ctx, imgUrl);
+        if (image.base64.length < 100) {
+          throw new Error('无法获取参考图片');
+        }
+        let origDimensions = ctx['gouqi_base'].getImage64Dimensions(image.dataUrl);
+        const newDimensions = calculateNewDimensions(origDimensions.width, origDimensions.height);
+        if (
+          (newDimensions.width < 700 || newDimensions.width > 1500) ||
+          (newDimensions.height < 700 || newDimensions.height > 1500)
+        ) {
+          throw new Error('无法适配图片尺寸');
+        }
+        //console.log(origDimensions);
+        //console.log(newDimensions);
+        //经测试，参考图的大小对结果的影响非常大，如果参考图太小生成的图片质量会非常差
+        const resizedImage64 = await ctx['gouqi_base'].resizeImage64(image.dataUrl, newDimensions.width, newDimensions.height);
+        //console.log(image.dataUrl)
+        paramsImgToImg.init_images = [resizedImage64];
+        response = await ctx.http(config.rpxy_url_img2img, {
+          method: "POST",
+          headers: headers,
+          timeout: 9900000,
+          data: paramsImgToImg,
+          responseType: 'arraybuffer'
+        });
+        // 从 response.data 中获取服务器返回的数据
+        const resData = response.data;
+        // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
+        if (resData && resData.byteLength > 0) {
+          // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
+          const respnseBuffer = Buffer.from(resData);
+          // 将 Buffer 转换为 utf8 字符串
+          const jsonString = respnseBuffer.toString('utf8');
+          //log前100个字符看结构，图生图的images不是数组
+          //console.log(jsonString.slice(0, 100));
+          //{
+          // "images": "iVBORw0KGgoAAAANSUhEUgAAAoAAAAKACAIAAACDr150AAAFzHRFWHRwcm9tcHQAeyIzIjogeyJpbnB1dHM
+          const parsedObject = JSON.parse(jsonString);
+          if (parsedObject && parsedObject.images) {
+            const b64 = parsedObject.images;
+            let mimeType = "image/jpeg";
+            base64Url = `data:${mimeType};base64,${b64}`;
+          } else {
+            throw new Error('无法提取base64的图片');
+          }
+        }
+      } else {
+        //文生图
+        paramsTextToImg.prompt = promtToSend;
+        response = await ctx.http(config.rpxy_url_txt2img, {
+          method: "POST",
+          headers: headers,
+          timeout: 9900000,
+          data: paramsTextToImg,
+          responseType: 'arraybuffer'
+        });
+        // 从 response.data 中获取服务器返回的数据
+        const resData = response.data;
+        // 检查返回的数据是否有效 (例如，是否为 ArrayBuffer 或有长度)
+        if (resData && resData.byteLength > 0) {
+          // 将 ArrayBuffer 转换为 Node.js 的 Buffer 对象
+          const respnseBuffer = Buffer.from(resData);
+          // 将 Buffer 转换为 utf8 字符串
+          const jsonString = respnseBuffer.toString('utf8');
+          //log前100个字符看结构，文生图的images是数组
+          //console.log(jsonString.slice(0, 100));
+          //{
+          // "images": [
+          //   "iVBORw0KGgoAAAANSUhEUgAAA4AAAAUQCAIAAACa4Kl5AAAMgHRFWHRwcm9tcHQAeyIxIjoge
+          const parsedObject = JSON.parse(jsonString);
+          if (parsedObject && parsedObject.images && Array.isArray(parsedObject.images) && parsedObject.images.length > 0) {
+            const b64 = parsedObject.images[0];
+            let mimeType = "image/jpeg";
+            base64Url = `data:${mimeType};base64,${b64}`;
+          } else {
+            throw new Error('无法提取base64的图片');
+          }
+        }
+      }
+      if (base64Url.length < 123) {
+        throw new Error('生成图片失败');
+      }
+      if (!config.collapse_response) {
+        return segment.image(base64Url);
+      }
+      const result = h('figure');
+      const attrs = {
+        userId: session.userId,
+        nickname: session.author?.nickname || session.username,
+      }
+      result.children.push(h('message', attrs, 'prompts: ' + promtToSend));
+      //result.children.push(h('message', attrs, 'negative_prompt: ' + paramsToSend.negative_prompt));
+      result.children.push(h('message', attrs, segment.image(base64Url)));
+      await session.send(result);
+    } catch (err) {
+      ctx.logger.warn(err);
+    }
   }
+
+
   ctx
     .command("image-novel <prompts:text>")
     .alias("画图novel")
