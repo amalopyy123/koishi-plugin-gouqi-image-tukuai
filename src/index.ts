@@ -25,39 +25,6 @@ export const inject = {
   required: ['http', 'gouqi_translator_yd1', 'gouqi_base']
 };
 
-function hasSensitiveWords(input) {
-  const lowercaseInput = input.toLowerCase();
-  const nsfwKeywords = [
-    "nsfw",
-    "nude",
-    "porn",
-    "hentai",
-    "ecchi",
-    "gore",
-    "violence",
-    "rape",
-    "incest",
-    "pedophile",
-    "pussy",
-    "cock",
-    "dick",
-    "vagina",
-    "penis",
-    "ass",
-    "boobs",
-    "tits",
-    "cum",
-    "anal",
-    "masturbation",
-    //  ... 这里可以添加更多你认为相关的关键词 ...
-  ];
-  for (const keyword of nsfwKeywords) {
-    if (lowercaseInput.includes(keyword)) {
-      return true;
-    }
-  }
-  return false;
-}
 //jimp不支持"image/webp"
 var ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 //10M
@@ -82,7 +49,7 @@ function hasChinese(str) {
 }
 
 export function apply(ctx: Context, config) {
-  let paramsTextToImg, paramsImgToImg;
+
   function initParams({ session, options: options2 }, input) {
     let denoisingStrength = config.denoising_strength[0] + Math.random() * (config.denoising_strength[1] - config.denoising_strength[0]);
     denoisingStrength = parseFloat(denoisingStrength.toFixed(3));
@@ -92,7 +59,7 @@ export function apply(ctx: Context, config) {
     if (options2.hasOwnProperty('denoising_strength')) {
       denoisingStrength = parseFloat(options2.denoising_strength);
     }
-    paramsTextToImg = {
+    let paramsTextToImg = {
       "enable_hr": true,
       "denoising_strength": denoisingStrength,
       "hr_scale": 2,
@@ -108,7 +75,7 @@ export function apply(ctx: Context, config) {
       //"negative_prompt": "(easynegative:1.1), (verybadimagenegative_v1.3:1), (low quality:1.2), (worst quality:1.2)"
       "negative_prompt": config.negative_prompt
     }
-    paramsImgToImg = {
+    let paramsImgToImg = {
       "init_images": ["data:image/jpeg;base64,..."],
       "denoising_strength": denoisingStrength,
       "prompt": "masterpiece, best quality, catgirl, cute",
@@ -123,6 +90,7 @@ export function apply(ctx: Context, config) {
       "sampler_index": config.sampler_index,
       "negative_prompt": config.negative_prompt
     }
+    return { 'paramsTextToImg': paramsTextToImg, 'paramsImgToImg': paramsImgToImg };
   }
 
   /**
@@ -136,8 +104,8 @@ export function apply(ctx: Context, config) {
  * @returns {{width: number, height: number}} 包含新宽度和新高度的对象
  */
   function calculateNewDimensions(originalWidth, originalHeight) {
-    const MIN_DIMENSION = 700;
-    const MAX_DIMENSION = 1500;
+    const MIN_DIMENSION = 600;
+    const MAX_DIMENSION = 1200;
 
     let newWidth = originalWidth;
     let newHeight = originalHeight;
@@ -166,8 +134,18 @@ export function apply(ctx: Context, config) {
       newWidth = Math.round(originalWidth * ratio);
       newHeight = Math.round(originalHeight * ratio);
     }
+    // 新增的规则3: 尺寸在[MIN, MAX]范围内，但需要根据短边调整
+    else {
+      const shorterSide = Math.min(originalWidth, originalHeight);
 
-    // 规则3: 尺寸在范围内，不需要改变，直接返回计算结果（初始值）
+      // 如果较短的一条边大于MIN_DIMENSION，就按照比例，将它改为MIN_DIMENSION
+      if (shorterSide > MIN_DIMENSION) {
+        const ratio = MIN_DIMENSION / shorterSide;
+        newWidth = Math.round(originalWidth * ratio);
+        newHeight = Math.round(originalHeight * ratio);
+      }
+      // 规则4: 如果shorterSide正好等于MIN_DIMENSION，则尺寸保持不变
+    }
     return { width: newWidth, height: newHeight };
   }
 
@@ -195,7 +173,7 @@ export function apply(ctx: Context, config) {
           throw new Error('翻译失败');
         }
       }
-      if (hasSensitiveWords(textPromt)) {
+      if (ctx['gouqi_base'].hasSensitiveWords(textPromt)) {
         //提时含有敏感词
         const bot = session.bot;
         try {
@@ -207,7 +185,9 @@ export function apply(ctx: Context, config) {
         return;
       }
 
-      initParams({ session, options: options2 }, input);
+      let initObj = initParams({ session, options: options2 }, input);
+      let paramsTextToImg = initObj.paramsTextToImg;
+      let paramsImgToImg = initObj.paramsImgToImg;
       const headers = {
         'Content-Type': 'application/json'
       };
@@ -236,14 +216,15 @@ export function apply(ctx: Context, config) {
         let origDimensions = ctx['gouqi_base'].getImage64Dimensions(image.dataUrl);
         const newDimensions = calculateNewDimensions(origDimensions.width, origDimensions.height);
         if (
-          (newDimensions.width < 700 || newDimensions.width > 1500) ||
-          (newDimensions.height < 700 || newDimensions.height > 1500)
+          (newDimensions.width < 499 || newDimensions.width > 1200) ||
+          (newDimensions.height < 499 || newDimensions.height > 1200)
         ) {
           throw new Error('无法适配图片尺寸');
         }
         //console.log(origDimensions);
         //console.log(newDimensions);
-        //经测试，参考图的大小对结果的影响非常大，如果参考图太小生成的图片质量会非常差
+        //经测试，参考图的大小对结果的影响非常大，如果参考图太小生成的图片质量会非常差，出现花边
+        //如果参考图太大，那么修改的地方会变成非常少，可能跟step有关
         const resizedImage64 = await ctx['gouqi_base'].resizeImage64(image.dataUrl, newDimensions.width, newDimensions.height);
         //console.log(image.dataUrl)
         paramsImgToImg.init_images = [resizedImage64];
