@@ -14,7 +14,7 @@ export const Config: Schema<Config> = Schema.object({
   additional_prompt: Schema.string().default('masterpiece, best quality, ultra-detailed, extremely detailed, best quality').description('附加提示词'),
   negative_prompt: Schema.string().default('owres, bad anatomy, bad hands, text, error, (missing fingers), extra digit, fewer digits, cropped, worst quality, low quality, signature, watermark, username, long neck, Humpbacked, bad crotch, bad crotch seam, fused crotch, fused seam, poorly drawn crotch, poorly drawn crotch seam, bad thigh gap, missing thigh gap, fused thigh gap, bad anatomy, short arm, (((missing arms))), missing thighs, missing calf, mutation, duplicate, more than 1 left hand, more than 1 right hand, deformed, (blurry), missing legs, extra arms, extra thighs, more than 2 thighs, extra calf, fused calf, extra legs, bad knee, extra knee, more than 2 legs').description('负面提示词'),
   steps: Schema.number().default(28).description('步数，28是免费，报错的话要调到28以上'),
-  denoising_strength: Schema.number().default(0.1).description('1 - 相似度'),
+  denoising_strength: Schema.tuple([Schema.number().default(0.3), Schema.number().default(0.8)]).description('1 - 相似度'),
   cfg_scale: Schema.number().default(8).description('低 cfg_scale 值：更有创意；高 cfg_scale 值：更加服从。对于绝大多数用户和绝大多数情况，7 是最理想的起始值。'),
   seed: Schema.number().default(-1).description('种子'),
   allow_image: Schema.boolean().default(true).description('是否允许图生图'),
@@ -83,10 +83,18 @@ function hasChinese(str) {
 
 export function apply(ctx: Context, config) {
   let paramsTextToImg, paramsImgToImg;
-  function initParams() {
+  function initParams({ session, options: options2 }, input) {
+    let denoisingStrength = config.denoising_strength[0] + Math.random() * (config.denoising_strength[1] - config.denoising_strength[0]);
+    denoisingStrength = parseFloat(denoisingStrength.toFixed(3));
+    if (options2.hasOwnProperty('d')) {
+      denoisingStrength = parseFloat(options2.d);
+    }
+    if (options2.hasOwnProperty('denoising_strength')) {
+      denoisingStrength = parseFloat(options2.denoising_strength);
+    }
     paramsTextToImg = {
       "enable_hr": true,
-      "denoising_strength": 0.8,
+      "denoising_strength": denoisingStrength,
       "hr_scale": 2,
       "hr_upscaler": "Latent",
       "hr_second_pass_steps": 10,
@@ -102,7 +110,7 @@ export function apply(ctx: Context, config) {
     }
     paramsImgToImg = {
       "init_images": ["data:image/jpeg;base64,..."],
-      "denoising_strength": 0.1,
+      "denoising_strength": denoisingStrength,
       "prompt": "masterpiece, best quality, catgirl, cute",
       "styles": [
         "Resize and fill"
@@ -183,6 +191,9 @@ export function apply(ctx: Context, config) {
         if (hasChinese(textPromt)) {
           textPromt = await ctx['gouqi_translator_yd1'].translate(ctx, textPromt);
         }
+        if (textPromt == 'Failed to translate') {
+          throw new Error('翻译失败');
+        }
       }
       if (hasSensitiveWords(textPromt)) {
         //提时含有敏感词
@@ -195,8 +206,8 @@ export function apply(ctx: Context, config) {
         }
         return;
       }
-  
-      initParams();
+
+      initParams({ session, options: options2 }, input);
       const headers = {
         'Content-Type': 'application/json'
       };
@@ -207,7 +218,7 @@ export function apply(ctx: Context, config) {
       if (sentImage) {
         //图生图
         paramsImgToImg.prompt = promtToSend;
-
+        //console.log(paramsImgToImg);
         let imgUrl;
         if (imgList.length != 0) {
           imgUrl = imgList[0].attrs.src;
