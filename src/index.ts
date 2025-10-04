@@ -10,14 +10,16 @@ export const Config: Schema<Config> = Schema.object({
   rpxy_url_txt2img: Schema.string().default('').description('文生图地址'),
   rpxy_url_img2img: Schema.string().default('').description('图生图地址'),
   token: Schema.string().default('').role("secret").description('token'),
-  sampler_index: Schema.string().default('Euler a').description("sampler_index,Euler a,DPM++ 2M"),
+  sampler_index: Schema.string().default('DPM++ 2M').description("sampler_index,Euler a,DPM++ 2M"),
+  sampler_name: Schema.string().default('DPM++ 2M').description("sampler_name,Euler a,DPM++ 2M"),
   additional_prompt: Schema.string().default('masterpiece, best quality, ultra-detailed, extremely detailed, best quality').description('附加提示词'),
   negative_prompt: Schema.string().default('owres, bad anatomy, bad hands, text, error, (missing fingers), extra digit, fewer digits, cropped, worst quality, low quality, signature, watermark, username, long neck, Humpbacked, bad crotch, bad crotch seam, fused crotch, fused seam, poorly drawn crotch, poorly drawn crotch seam, bad thigh gap, missing thigh gap, fused thigh gap, bad anatomy, short arm, (((missing arms))), missing thighs, missing calf, mutation, duplicate, more than 1 left hand, more than 1 right hand, deformed, (blurry), missing legs, extra arms, extra thighs, more than 2 thighs, extra calf, fused calf, extra legs, bad knee, extra knee, more than 2 legs').description('负面提示词'),
-  steps: Schema.number().default(28).description('步数，28是免费，报错的话要调到28以上'),
+  steps: Schema.number().default(28).description('步数'),
   denoising_strength: Schema.tuple([Schema.number().default(0.3), Schema.number().default(0.8)]).description('1 - 相似度'),
   cfg_scale: Schema.number().default(8).description('低 cfg_scale 值：更有创意；高 cfg_scale 值：更加服从。对于绝大多数用户和绝大多数情况，7 是最理想的起始值。'),
   seed: Schema.number().default(-1).description('种子'),
   allow_image: Schema.boolean().default(true).description('是否允许图生图'),
+  restore_faces: Schema.boolean().default(true).description('修复脸部'),
   collapse_response: Schema.boolean().default(true).description('折叠回复'),
   translate_input: Schema.boolean().default(false).description('翻译输入')
 })
@@ -67,13 +69,15 @@ export function apply(ctx: Context, config) {
       "hr_second_pass_steps": 10,
       "prompt": "masterpiece, nsfw, breast,cowgirl, best quality, long hair, looking at viewer, blue eyes, school uniform, classroom",
       "seed": config.seed,
-      "sampler_name": config.sampler_index,
+      "sampler_index": config.sampler_index,
+      "sampler_name": config.sampler_name,
       "steps": config.steps,
       "cfg_scale": config.cfg_scale,
       "width": 512,
-      "height": 768,
+      "height": 512,
       //"negative_prompt": "(easynegative:1.1), (verybadimagenegative_v1.3:1), (low quality:1.2), (worst quality:1.2)"
-      "negative_prompt": config.negative_prompt
+      "negative_prompt": config.negative_prompt,
+      "restore_faces": config.restore_faces
     }
     let paramsImgToImg = {
       "init_images": ["data:image/jpeg;base64,..."],
@@ -88,7 +92,9 @@ export function apply(ctx: Context, config) {
       "width": 512,
       "height": 512,
       "sampler_index": config.sampler_index,
-      "negative_prompt": config.negative_prompt
+      "sampler_name": config.sampler_name,
+      "negative_prompt": config.negative_prompt,
+      "restore_faces": config.restore_faces
     }
     return { 'paramsTextToImg': paramsTextToImg, 'paramsImgToImg': paramsImgToImg };
   }
@@ -216,8 +222,8 @@ export function apply(ctx: Context, config) {
         let origDimensions = ctx['gouqi_base'].getImage64Dimensions(image.dataUrl);
         const newDimensions = calculateNewDimensions(origDimensions.width, origDimensions.height);
         if (
-          (newDimensions.width < 499 || newDimensions.width > 1200) ||
-          (newDimensions.height < 499 || newDimensions.height > 1200)
+          (newDimensions.width < 599 || newDimensions.width > 1200) ||
+          (newDimensions.height < 599 || newDimensions.height > 1200)
         ) {
           throw new Error('无法适配图片尺寸');
         }
@@ -231,7 +237,7 @@ export function apply(ctx: Context, config) {
         response = await ctx.http(config.rpxy_url_img2img, {
           method: "POST",
           headers: headers,
-          timeout: 9900000,
+          timeout: 990000,
           data: paramsImgToImg,
           responseType: 'arraybuffer'
         });
@@ -262,7 +268,7 @@ export function apply(ctx: Context, config) {
         response = await ctx.http(config.rpxy_url_txt2img, {
           method: "POST",
           headers: headers,
-          timeout: 9900000,
+          timeout: 990000,
           data: paramsTextToImg,
           responseType: 'arraybuffer'
         });
@@ -311,9 +317,10 @@ export function apply(ctx: Context, config) {
 
 
   ctx
-    .command("image-novel <prompts:text>")
-    .alias("画图novel")
-    .alias("画图n")
+    .command("image-sd <prompts:text>")
+    .alias("画图sd")
+    .alias("画图s")
+    .option('denoising_strength', '-d <value:number> 重绘幅度') // 添加这一行
     .action(async ({ session, options: options2 }, input) => {
       return generateImage({ session, options: options2 }, input)
     }
