@@ -173,10 +173,15 @@ export function apply(ctx: Context, config) {
     try {
       if (config.translate_input) {
         if (hasChinese(textPromt)) {
-          textPromt = await ctx['gouqi_translator_yd1'].translate(ctx, textPromt);
-        }
-        if (textPromt == 'Failed to translate') {
-          throw new Error('翻译失败');
+          let simpleTranslateInfo = ctx['gouqi_base'].simpleTranslate(textPromt);
+          if (simpleTranslateInfo.translated) {
+            textPromt = simpleTranslateInfo.result;
+          } else {
+            textPromt = await ctx['gouqi_translator_yd1'].translate(ctx, textPromt);
+            if (textPromt == 'Failed to translate') {
+              throw new Error('翻译失败');
+            }
+          }
         }
       }
       if (ctx['gouqi_base'].hasSensitiveWords(textPromt)) {
